@@ -83,13 +83,15 @@ class TestMarkWarmAvailable:
 
     @pytest.mark.asyncio
     async def test_mark_available_after_warmup(self, sandbox_mgr, db_session):
-        """After warmup, sandbox should be marked available with rotation time."""
+        """After warmup, sandbox should be marked available with deterministic rotation time."""
         sandbox = await sandbox_mgr.create_warm_sandbox(
             profile_id="python-default",
             warm_rotate_ttl=1800,
         )
 
-        await sandbox_mgr.mark_warm_available(sandbox.id, warm_rotate_ttl=1800)
+        fixed_now = utcnow()
+        with patch("app.managers.sandbox.sandbox.utcnow", return_value=fixed_now):
+            await sandbox_mgr.mark_warm_available(sandbox.id, warm_rotate_ttl=1800)
 
         # Refetch
         from sqlmodel import select
@@ -98,11 +100,8 @@ class TestMarkWarmAvailable:
         updated = result.scalars().first()
 
         assert updated.warm_state == WarmState.AVAILABLE.value
-        assert updated.warm_ready_at is not None
-        assert updated.warm_rotate_at is not None
-        # warm_rotate_at should be approximately warm_ready_at + 1800s
-        delta = (updated.warm_rotate_at - updated.warm_ready_at).total_seconds()
-        assert abs(delta - 1800) < 2  # Allow 2s tolerance
+        assert updated.warm_ready_at == fixed_now
+        assert updated.warm_rotate_at == fixed_now + timedelta(seconds=1800)
 
 
 class TestClaimWarmSandbox:
@@ -193,17 +192,17 @@ class TestClaimWarmSandbox:
     @pytest.mark.asyncio
     async def test_claim_picks_oldest_ready(self, sandbox_mgr, db_session):
         """Should prefer the oldest warm_ready_at sandbox."""
-        import asyncio
-
         # Create two warm sandboxes
         sb1 = await sandbox_mgr.create_warm_sandbox(profile_id="python-default")
-        await sandbox_mgr.mark_warm_available(sb1.id)
-
-        # Small delay so warm_ready_at differs
-        await asyncio.sleep(0.01)
-
         sb2 = await sandbox_mgr.create_warm_sandbox(profile_id="python-default")
-        await sandbox_mgr.mark_warm_available(sb2.id)
+
+        base = utcnow()
+        with patch(
+            "app.managers.sandbox.sandbox.utcnow",
+            side_effect=[base, base + timedelta(milliseconds=10)],
+        ):
+            await sandbox_mgr.mark_warm_available(sb1.id)
+            await sandbox_mgr.mark_warm_available(sb2.id)
 
         # Claim should pick sb1 (oldest)
         claimed = await sandbox_mgr.claim_warm_sandbox(
