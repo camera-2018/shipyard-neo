@@ -5,6 +5,14 @@ from __future__ import annotations
 from app.config import Settings
 
 
+def test_browser_learning_extraction_defaults():
+    settings = Settings()
+    extraction = settings.browser_learning.extraction
+    assert extraction.dedup_enabled is True
+    assert extraction.variable_extraction_enabled is True
+    assert extraction.llm.enabled is False
+
+
 def test_browser_learning_extraction_env_prefix(monkeypatch):
     monkeypatch.setenv("BAY_BROWSER_LEARNING__EXTRACTION__DEDUP_ENABLED", "false")
     monkeypatch.setenv(
@@ -29,4 +37,3 @@ def test_browser_learning_extraction_env_prefix(monkeypatch):
     assert extraction.llm.api_key == "sk-test"
     assert extraction.llm.model == "gpt-test"
     assert extraction.llm.timeout_seconds == 9
-

@@ -507,6 +507,76 @@ async def test_processor_deduplicates_by_skill_key_and_payload_hash(
 
 
 @pytest.mark.asyncio
+async def test_processor_logs_duplicate_skipped_event(
+    skill_service: SkillLifecycleService,
+    learning_config: BrowserLearningConfig,
+):
+    trace_payload = {
+        "steps": [
+            {"kind": "individual_action", "cmd": "open about:blank", "exit_code": 0},
+            {"kind": "individual_action", "cmd": "open about:blank", "exit_code": 0},
+        ]
+    }
+    blob_a = await skill_service.create_artifact_blob(
+        owner="default",
+        kind="browser_trace",
+        payload=trace_payload,
+    )
+    blob_b = await skill_service.create_artifact_blob(
+        owner="default",
+        kind="browser_trace",
+        payload=trace_payload,
+    )
+    await skill_service.create_execution(
+        owner="default",
+        sandbox_id="sandbox-dup",
+        exec_type=ExecutionType.BROWSER_BATCH,
+        code="batch-a",
+        success=True,
+        execution_time_ms=9,
+        payload_ref=skill_service.make_blob_ref(blob_a.id),
+        tags="skill:browser-dup-log",
+        learn_enabled=True,
+        learn_status=LearnStatus.PENDING,
+    )
+    await skill_service.create_execution(
+        owner="default",
+        sandbox_id="sandbox-dup",
+        exec_type=ExecutionType.BROWSER_BATCH,
+        code="batch-b",
+        success=True,
+        execution_time_ms=9,
+        payload_ref=skill_service.make_blob_ref(blob_b.id),
+        tags="skill:browser-dup-log",
+        learn_enabled=True,
+        learn_status=LearnStatus.PENDING,
+    )
+
+    events: list[tuple[str, dict[str, object]]] = []
+    processor = BrowserLearningProcessor(
+        service=skill_service,
+        config=learning_config,
+        auto_release_enabled=False,
+    )
+    processor._log = SimpleNamespace(
+        info=lambda event, **kwargs: events.append((event, kwargs)),
+        exception=lambda *args, **kwargs: None,
+    )
+
+    cycle = await processor.run_cycle()
+    assert cycle.created_candidates == 1
+    duplicate_events = [
+        payload
+        for event, payload in events
+        if event == "skills.browser.extraction.duplicate_skipped"
+    ]
+    assert len(duplicate_events) == 1
+    assert duplicate_events[0]["skill_key"] == "browser-dup-log"
+    assert isinstance(duplicate_events[0]["payload_hash"], str)
+    assert duplicate_events[0]["duplicate_candidate_id"].startswith("sc-")
+
+
+@pytest.mark.asyncio
 async def test_scheduler_uses_llm_strategy_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
     skill_service: SkillLifecycleService,

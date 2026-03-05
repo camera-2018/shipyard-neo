@@ -290,3 +290,61 @@ async def test_llm_strategy_maps_http_status_error_to_connection_reason(
     assert captured["reason"] == "connection_error"
     assert len(results) == 1
     assert results[0].skill_key == "browser-checkout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side_effect", "expected_reason"),
+    [
+        (httpx.TimeoutException("timeout"), "timeout"),
+        (
+            httpx.ConnectError(
+                "connect fail",
+                request=httpx.Request("POST", "https://llm.test/v1/chat/completions"),
+            ),
+            "connection_error",
+        ),
+        (ValueError("bad parse"), "parse_error"),
+    ],
+)
+async def test_llm_strategy_logs_structured_fallback_event(
+    monkeypatch: pytest.MonkeyPatch,
+    side_effect: Exception,
+    expected_reason: str,
+):
+    async def _raise(
+        self: LlmAssistedExtractionStrategy,
+        *,
+        segments: list[list[dict[str, object]]],
+        context: ExtractionContext,
+    ) -> list[ExtractionResult]:
+        del self, segments, context
+        raise side_effect
+
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeLog:
+        def warning(self, event: str, **kwargs: object) -> None:
+            events.append((event, kwargs))
+
+    monkeypatch.setattr(LlmAssistedExtractionStrategy, "_extract_via_llm", _raise)
+
+    strategy = LlmAssistedExtractionStrategy(
+        config=LlmExtractionConfig(enabled=True, api_base="https://llm.test/v1", api_key="k"),
+        fallback=RuleBasedExtractionStrategy(),
+    )
+    strategy._log = _FakeLog()
+
+    segment = [
+        {"cmd": "open https://example.com", "exit_code": 0, "kind": "individual_action"},
+        {"cmd": "click @e1", "exit_code": 0, "kind": "individual_action"},
+    ]
+    results = await strategy.extract(segments=[segment], context=_context())
+
+    assert len(results) == 1
+    assert events == [
+        (
+            "skills.browser.extraction.llm_fallback",
+            {"reason": expected_reason, "execution_id": "exec-1"},
+        )
+    ]
