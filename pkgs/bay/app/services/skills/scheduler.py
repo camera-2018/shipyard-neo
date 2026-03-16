@@ -466,12 +466,27 @@ class BrowserLearningScheduler:
         self._log.info("skills.browser.scheduler.stopped")
 
     async def _background_loop(self) -> None:
+        """Internal background loop.
+
+        Note:
+        - If run_on_startup is enabled, lifecycle already executed one cycle.
+          Sleep before the first loop cycle to avoid immediate duplicate execution.
+        """
+        first_iteration = True
+
         while self._running:
+            should_sleep = (first_iteration and self._config.run_on_startup) or (
+                not first_iteration
+            )
+            if should_sleep:
+                try:
+                    await asyncio.sleep(self._config.interval_seconds)
+                except asyncio.CancelledError:
+                    break
+
+            first_iteration = False
+
             try:
                 await self.run_once()
             except Exception as exc:
                 self._log.exception("skills.browser.scheduler.cycle_failed", error=str(exc))
-            try:
-                await asyncio.sleep(self._config.interval_seconds)
-            except asyncio.CancelledError:
-                break

@@ -413,11 +413,12 @@ class TestOrphanCargoGC:
 
     @pytest.mark.asyncio
     async def test_finds_orphan_cargos(self):
-        """Should find managed cargos without a valid sandbox."""
+        """Should delete orphan cargos when no runtime still references them."""
         from app.services.gc.tasks.orphan_cargo import OrphanCargoGC
         from tests.fakes import FakeDriver
 
         driver = FakeDriver()
+        driver.list_runtime_instances = AsyncMock(return_value=[])
         db_session = AsyncMock()
 
         # Mock cargo manager
@@ -429,7 +430,41 @@ class TestOrphanCargoGC:
         result = await task.run()
 
         assert result.cleaned_count == 2
+        assert result.skipped_count == 0
         assert task._cargo_mgr.delete_internal_by_id.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_orphan_cargo_skips_when_runtime_still_references_volume(self):
+        """Should skip deleting orphan cargo when runtime instances still reference it."""
+        from app.services.gc.tasks.orphan_cargo import OrphanCargoGC
+        from tests.fakes import FakeDriver
+
+        driver = FakeDriver()
+        driver.list_runtime_instances = AsyncMock(
+            return_value=[
+                RuntimeInstance(
+                    id="container-1",
+                    name="bay-session-sess-1",
+                    labels={
+                        "bay.cargo_id": "ws-orphan-1",
+                        "bay.managed": "true",
+                    },
+                    state="running",
+                )
+            ]
+        )
+        db_session = AsyncMock()
+
+        task = OrphanCargoGC(driver, db_session)
+        task._find_orphans = AsyncMock(return_value=["ws-orphan-1"])
+        task._cargo_mgr = MagicMock()
+        task._cargo_mgr.delete_internal_by_id = AsyncMock()
+
+        result = await task.run()
+
+        assert result.cleaned_count == 0
+        assert result.skipped_count == 1
+        task._cargo_mgr.delete_internal_by_id.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_orphan_cargo_no_orphans(self):
@@ -437,6 +472,7 @@ class TestOrphanCargoGC:
         from tests.fakes import FakeDriver
 
         driver = FakeDriver()
+        driver.list_runtime_instances = AsyncMock(return_value=[])
         db_session = AsyncMock()
 
         from app.services.gc.tasks.orphan_cargo import OrphanCargoGC

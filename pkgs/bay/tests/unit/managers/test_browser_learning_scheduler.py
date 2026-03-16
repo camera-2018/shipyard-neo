@@ -602,3 +602,34 @@ async def test_scheduler_start_stop_idempotent(
 
     # stop again should be noop
     await scheduler.stop()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_background_loop_sleeps_first_when_startup_cycle_already_ran(
+    monkeypatch: pytest.MonkeyPatch,
+    learning_config: BrowserLearningConfig,
+):
+    config = learning_config.model_copy(update={"run_on_startup": True, "interval_seconds": 0.2})
+    scheduler = scheduler_module.BrowserLearningScheduler(config=config)
+
+    run_once_calls = 0
+
+    async def fake_run_once():
+        nonlocal run_once_calls
+        run_once_calls += 1
+        return scheduler_module.BrowserLearningCycleResult()
+
+    monkeypatch.setattr(scheduler, "run_once", fake_run_once)
+
+    # Simulate lifecycle startup run happening before background loop starts.
+    await scheduler.run_once()
+    assert run_once_calls == 1
+
+    await scheduler.start()
+    await asyncio.sleep(0.05)
+
+    # Background loop should still be in its initial sleep window.
+    assert run_once_calls == 1
+
+    await scheduler.stop()
+    assert scheduler.is_running is False

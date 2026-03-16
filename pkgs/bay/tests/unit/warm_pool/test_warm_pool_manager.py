@@ -448,3 +448,70 @@ class TestWarmPoolSchedulerReconcile:
         updated_sandbox = sandbox_result.scalars().first()
         assert updated_sandbox is not None
         assert updated_sandbox.warm_state == WarmState.AVAILABLE.value
+
+    @pytest.mark.asyncio
+    async def test_reconcile_keeps_available_sandbox_when_single_runtime_alive(
+        self,
+        db_session,
+        driver,
+        monkeypatch,
+    ):
+        sandbox_mgr = SandboxManager(driver=driver, db_session=db_session)
+        sandbox = await sandbox_mgr.create_warm_sandbox(profile_id="python-default")
+        await sandbox_mgr.mark_warm_available(sandbox.id)
+
+        session = Session(
+            id="sess-warm-single",
+            sandbox_id=sandbox.id,
+            profile_id="python-default",
+            container_id="live-container",
+            endpoint="http://live-runtime",
+            observed_state=SessionStatus.RUNNING,
+            desired_state=SessionStatus.RUNNING,
+        )
+        db_session.add(session)
+        sandbox.current_session_id = session.id
+        await db_session.commit()
+
+        queue = _FakeWarmupQueue()
+        scheduler = WarmPoolScheduler(
+            config=SimpleNamespace(interval_seconds=60, run_on_startup=False),
+            warmup_queue=queue,
+        )
+
+        driver.set_status_override(
+            "live-container",
+            ContainerInfo(
+                container_id="live-container",
+                status=ContainerStatus.RUNNING,
+                endpoint="http://live-runtime",
+            ),
+        )
+
+        class _SessionFactory:
+            async def __aenter__(self):
+                return db_session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr(
+            "app.db.session.get_async_session",
+            lambda: _SessionFactory(),
+        )
+        monkeypatch.setattr("app.api.dependencies.get_driver", lambda: driver)
+
+        reconciled = await scheduler._reconcile_profile_runtime_state("python-default")
+        assert reconciled == 0
+        assert queue.enqueued == []
+
+        sandbox_result = await db_session.execute(select(Sandbox).where(Sandbox.id == sandbox.id))
+        updated_sandbox = sandbox_result.scalars().first()
+        assert updated_sandbox is not None
+        assert updated_sandbox.warm_state == WarmState.AVAILABLE.value
+
+        session_result = await db_session.execute(select(Session).where(Session.id == session.id))
+        updated_session = session_result.scalars().first()
+        assert updated_session is not None
+        assert updated_session.observed_state == SessionStatus.RUNNING
+        assert updated_session.endpoint == "http://live-runtime"

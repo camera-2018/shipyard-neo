@@ -63,6 +63,14 @@ class OrphanCargoGC(GCTask):
 
         for cargo_id in orphans:
             try:
+                if await self._has_runtime_references(cargo_id):
+                    result.skipped_count += 1
+                    self._log.info(
+                        "gc.orphan_cargo.skip.runtime_in_use",
+                        cargo_id=cargo_id,
+                    )
+                    continue
+
                 await self._cargo_mgr.delete_internal_by_id(cargo_id)
                 result.cleaned_count += 1
                 self._log.info(
@@ -78,6 +86,20 @@ class OrphanCargoGC(GCTask):
                 result.add_error(f"cargo {cargo_id}: {e}")
 
         return result
+
+    async def _has_runtime_references(self, cargo_id: str) -> bool:
+        """Check whether any runtime instance still references the cargo.
+
+        Conservative by design: if any runtime instance still carries the cargo label,
+        skip deletion for this GC cycle and let a later cycle retry after runtime cleanup.
+        """
+        instances = await self._driver.list_runtime_instances(
+            labels={
+                "bay.cargo_id": cargo_id,
+                "bay.managed": "true",
+            }
+        )
+        return len(instances) > 0
 
     async def _find_orphans(self) -> list[str]:
         """Find orphan managed cargo IDs."""

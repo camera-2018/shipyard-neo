@@ -213,6 +213,31 @@ class TestGCScheduler:
 
         assert not scheduler.is_running
 
+    @pytest.mark.asyncio
+    async def test_background_loop_sleeps_first_when_startup_cycle_already_ran(self, gc_config):
+        """When run_on_startup is enabled, background loop should not immediately run again."""
+        task = FakeGCTask("task1")
+        gc_config.run_on_startup = True
+        gc_config.interval_seconds = 0.2
+
+        scheduler = GCScheduler(
+            tasks=[task],
+            config=gc_config,
+        )
+
+        # Simulate lifecycle startup run happening before background loop starts.
+        await scheduler.run_once()
+        assert task.run_count == 1
+
+        await scheduler.start()
+        await asyncio.sleep(0.05)
+
+        # Background loop should still be in initial sleep window.
+        assert task.run_count == 1
+
+        await scheduler.stop()
+        assert not scheduler.is_running
+
 
 class TestNoopCoordinator:
     """Tests for NoopCoordinator."""
