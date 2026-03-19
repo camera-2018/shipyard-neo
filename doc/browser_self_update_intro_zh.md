@@ -41,8 +41,8 @@ graph TD
     end
 
     subgraph "Runtime Environment"
-        Ship[Ship (Code Execution)]
-        Gull[Gull (Browser Runtime)]
+        Ship["Ship (Code Execution)"]
+        Gull["Gull (Browser Runtime)"]
     end
 
     Agent -->|POST /browser/exec| API
