@@ -138,3 +138,4 @@ jobs:
         run: |
           tag=$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
           docker buildx imagetools inspect "$tag"
+
